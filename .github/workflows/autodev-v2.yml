@@ -1,5 +1,5 @@
 # AutoDev Workflow
-# This workflow executes tasks using Claude API in Docker
+# This workflow executes tasks using Claude 4.5 Sonnet API via Docker Action
 
 name: 'AutoDev'
 run-name: 'AutoDev: ${{ inputs.task_title }}'
@@ -45,35 +45,26 @@ jobs:
       pull-requests: write
 
     steps:
-      - name: Checkout repository
+      - name: Checkout target repository
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.base_branch }}
           fetch-depth: 0
 
-      - name: Setup environment
-        run: |
-          echo "TASK_ID=${{ inputs.task_id }}" >> $GITHUB_ENV
-          echo "COMPOSITE_TASK_ID=${{ inputs.composite_task_id }}" >> $GITHUB_ENV
-          echo "TASK_TITLE=${{ inputs.task_title }}" >> $GITHUB_ENV
-          echo "TARGET_BRANCH=${{ inputs.target_branch }}" >> $GITHUB_ENV
+      - name: Checkout AutoDev Action
+        uses: actions/checkout@v4
+        with:
+          repository: load28/a-dev
+          path: .autodev-action
+          sparse-checkout: |
+            action
 
-      - name: Download Python execution script
-        run: |
-          curl -sSL https://raw.githubusercontent.com/load28/a-dev/main/templates/execute_task.py -o execute_task.py
-          chmod +x execute_task.py
-
-      - name: Execute task with Claude API in Docker
-        id: execute_task
-        run: |
-          docker run --rm \
-            -v ${{ github.workspace }}:/workspace \
-            -w /workspace \
-            -e ANTHROPIC_API_KEY="${{ secrets.ANTHROPIC_API_KEY }}" \
-            -e TASK_PROMPT="${{ inputs.prompt }}" \
-            -e TASK_ID="${{ inputs.task_id }}" \
-            -e WORKSPACE="/workspace" \
-            python:3.11-slim bash -c "pip install -q anthropic && python /workspace/execute_task.py"
+      - name: Execute task with Claude 4.5 Sonnet
+        uses: ./.autodev-action/action
+        with:
+          task-prompt: ${{ inputs.prompt }}
+          task-id: ${{ inputs.task_id }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 
       - name: Commit changes
         id: commit
