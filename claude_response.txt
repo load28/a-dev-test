@@ -1,0 +1,1075 @@
+# OAuth Google Login Implementation - Enterprise Grade
+
+I'll implement a comprehensive authentication system with Google OAuth, following enterprise-level patterns including context management, protected routes, token management, and error handling.
+
+## Files to Create/Modify
+
+### 1. **package.json** (Update dependencies)
+```json
+{
+  "name": "vite-react-ts-starter",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tanstack/react-router": "^1.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "zustand": "^4.4.7"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.43",
+    "@types/react-dom": "^18.2.17",
+    "@typescript-eslint/eslint-plugin": "^6.14.0",
+    "@typescript-eslint/parser": "^6.14.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "eslint": "^8.55.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "eslint-plugin-react-refresh": "^0.4.5",
+    "typescript": "^5.2.2",
+    "vite": "^5.0.8"
+  }
+}
+```
+
+### 2. **.env.example** (Create)
+```env
+VITE_GOOGLE_CLIENT_ID=your_google_client_id_here
+VITE_API_BASE_URL=http://localhost:3000/api
+VITE_AUTH_REDIRECT_URI=http://localhost:5173/auth/callback
+```
+
+### 3. **.env** (Create - for local development)
+```env
+VITE_GOOGLE_CLIENT_ID=your_actual_google_client_id
+VITE_API_BASE_URL=http://localhost:3000/api
+VITE_AUTH_REDIRECT_URI=http://localhost:5173/auth/callback
+```
+
+### 4. **src/types/auth.types.ts** (Create)
+```typescript
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  picture?: string;
+  emailVerified: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: number;
+  tokenType: string;
+}
+
+export interface AuthState {
+  user: User | null;
+  tokens: AuthTokens | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  error: AuthError | null;
+}
+
+export interface AuthError {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface GoogleAuthResponse {
+  credential: string;
+  select_by?: string;
+}
+
+export interface LoginResponse {
+  user: User;
+  tokens: AuthTokens;
+}
+
+export interface RefreshTokenResponse {
+  accessToken: string;
+  expiresIn: number;
+}
+
+export enum AuthErrorCode {
+  INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
+  TOKEN_EXPIRED = 'TOKEN_EXPIRED',
+  REFRESH_TOKEN_INVALID = 'REFRESH_TOKEN_INVALID',
+  NETWORK_ERROR = 'NETWORK_ERROR',
+  UNAUTHORIZED = 'UNAUTHORIZED',
+  GOOGLE_AUTH_FAILED = 'GOOGLE_AUTH_FAILED',
+  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
+}
+```
+
+### 5. **src/config/auth.config.ts** (Create)
+```typescript
+export const authConfig = {
+  google: {
+    clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+    redirectUri: import.meta.env.VITE_AUTH_REDIRECT_URI,
+    scope: 'openid email profile',
+  },
+  api: {
+    baseUrl: import.meta.env.VITE_API_BASE_URL,
+    endpoints: {
+      login: '/auth/login',
+      logout: '/auth/logout',
+      refresh: '/auth/refresh',
+      me: '/auth/me',
+      googleAuth: '/auth/google',
+    },
+  },
+  storage: {
+    accessTokenKey: 'auth_access_token',
+    refreshTokenKey: 'auth_refresh_token',
+    userKey: 'auth_user',
+  },
+  token: {
+    refreshThreshold: 5 * 60 * 1000, // 5 minutes before expiry
+  },
+} as const;
+
+export const validateAuthConfig = (): void => {
+  if (!authConfig.google.clientId) {
+    throw new Error('VITE_GOOGLE_CLIENT_ID is not configured');
+  }
+  if (!authConfig.api.baseUrl) {
+    throw new Error('VITE_API_BASE_URL is not configured');
+  }
+};
+```
+
+### 6. **src/services/storage.service.ts** (Create)
+```typescript
+import { authConfig } from '../config/auth.config';
+import type { User, AuthTokens } from '../types/auth.types';
+
+class StorageService {
+  private storage: Storage;
+
+  constructor(storage: Storage = localStorage) {
+    this.storage = storage;
+  }
+
+  // Token management
+  setAccessToken(token: string): void {
+    this.storage.setItem(authConfig.storage.accessTokenKey, token);
+  }
+
+  getAccessToken(): string | null {
+    return this.storage.getItem(authConfig.storage.accessTokenKey);
+  }
+
+  setRefreshToken(token: string): void {
+    this.storage.setItem(authConfig.storage.refreshTokenKey, token);
+  }
+
+  getRefreshToken(): string | null {
+    return this.storage.getItem(authConfig.storage.refreshTokenKey);
+  }
+
+  setTokens(tokens: AuthTokens): void {
+    this.setAccessToken(tokens.accessToken);
+    this.setRefreshToken(tokens.refreshToken);
+  }
+
+  clearTokens(): void {
+    this.storage.removeItem(authConfig.storage.accessTokenKey);
+    this.storage.removeItem(authConfig.storage.refreshTokenKey);
+  }
+
+  // User management
+  setUser(user: User): void {
+    this.storage.setItem(authConfig.storage.userKey, JSON.stringify(user));
+  }
+
+  getUser(): User | null {
+    const userStr = this.storage.getItem(authConfig.storage.userKey);
+    if (!userStr) return null;
+    
+    try {
+      return JSON.parse(userStr) as User;
+    } catch {
+      return null;
+    }
+  }
+
+  clearUser(): void {
+    this.storage.removeItem(authConfig.storage.userKey);
+  }
+
+  // Clear all auth data
+  clearAll(): void {
+    this.clearTokens();
+    this.clearUser();
+  }
+
+  // Check if tokens exist
+  hasTokens(): boolean {
+    return !!(this.getAccessToken() && this.getRefreshToken());
+  }
+}
+
+export const storageService = new StorageService();
+```
+
+### 7. **src/services/api.service.ts** (Create)
+```typescript
+import { authConfig } from '../config/auth.config';
+import { storageService } from './storage.service';
+import { AuthErrorCode, type AuthError } from '../types/auth.types';
+
+interface RequestConfig extends RequestInit {
+  requiresAuth?: boolean;
+}
+
+class ApiService {
+  private baseUrl: string;
+  private refreshPromise: Promise<string> | null = null;
+
+  constructor() {
+    this.baseUrl = authConfig.api.baseUrl;
+  }
+
+  private async handleResponse<T>(response: Response): Promise<T> {
+    if (!response.ok) {
+      const error = await this.parseError(response);
+      throw error;
+    }
+
+    const contentType = response.headers.get('content-type');
+    if (contentType?.includes('application/json')) {
+      return response.json();
+    }
+
+    return {} as T;
+  }
+
+  private async parseError(response: Response): Promise<AuthError> {
+    let message = 'An error occurred';
+    let code = AuthErrorCode.UNKNOWN_ERROR;
+    let details: Record<string, unknown> = {};
+
+    try {
+      const errorData = await response.json();
+      message = errorData.message || message;
+      code = errorData.code || code;
+      details = errorData.details || details;
+    } catch {
+      // If parsing fails, use status text
+      message = response.statusText || message;
+    }
+
+    if (response.status === 401) {
+      code = AuthErrorCode.UNAUTHORIZED;
+    } else if (response.status >= 500) {
+      code = AuthErrorCode.NETWORK_ERROR;
+    }
+
+    return { code, message, details };
+  }
+
+  private async refreshAccessToken(): Promise<string> {
+    // Prevent multiple simultaneous refresh requests
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = (async () => {
+      try {
+        const refreshToken = storageService.getRefreshToken();
+        if (!refreshToken) {
+          throw new Error('No refresh token available');
+        }
+
+        const response = await fetch(
+          `${this.baseUrl}${authConfig.api.endpoints.refresh}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ refreshToken }),
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error('Token refresh failed');
+        }
+
+        const data = await response.json();
+        storageService.setAccessToken(data.accessToken);
+        return data.accessToken;
+      } finally {
+        this.refreshPromise = null;
+      }
+    })();
+
+    return this.refreshPromise;
+  }
+
+  async request<T>(
+    endpoint: string,
+    config: RequestConfig = {}
+  ): Promise<T> {
+    const { requiresAuth = false, headers = {}, ...restConfig } = config;
+
+    const requestHeaders: HeadersInit = {
+      'Content-Type': 'application/json',
+      ...headers,
+    };
+
+    if (requiresAuth) {
+      const token = storageService.getAccessToken();
+      if (token) {
+        requestHeaders['Authorization'] = `Bearer ${token}`;
+      }
+    }
+
+    try {
+      let response = await fetch(`${this.baseUrl}${endpoint}`, {
+        ...restConfig,
+        headers: requestHeaders,
+      });
+
+      // If unauthorized and we have a refresh token, try to refresh
+      if (response.status === 401 && requiresAuth && storageService.getRefreshToken()) {
+        try {
+          const newToken = await this.refreshAccessToken();
+          requestHeaders['Authorization'] = `Bearer ${newToken}`;
+          
+          // Retry the original request
+          response = await fetch(`${this.baseUrl}${endpoint}`, {
+            ...restConfig,
+            headers: requestHeaders,
+          });
+        } catch (refreshError) {
+          // Refresh failed, clear tokens and throw
+          storageService.clearAll();
+          throw {
+            code: AuthErrorCode.REFRESH_TOKEN_INVALID,
+            message: 'Session expired. Please login again.',
+          } as AuthError;
+        }
+      }
+
+      return this.handleResponse<T>(response);
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error) {
+        throw error;
+      }
+      
+      throw {
+        code: AuthErrorCode.NETWORK_ERROR,
+        message: 'Network error occurred. Please check your connection.',
+      } as AuthError;
+    }
+  }
+
+  get<T>(endpoint: string, config?: RequestConfig): Promise<T> {
+    return this.request<T>(endpoint, { ...config, method: 'GET' });
+  }
+
+  post<T>(endpoint: string, data?: unknown, config?: RequestConfig): Promise<T> {
+    return this.request<T>(endpoint, {
+      ...config,
+      method: 'POST',
+      body: data ? JSON.stringify(data) : undefined,
+    });
+  }
+
+  put<T>(endpoint: string, data?: unknown, config?: RequestConfig): Promise<T> {
+    return this.request<T>(endpoint, {
+      ...config,
+      method: 'PUT',
+      body: data ? JSON.stringify(data) : undefined,
+    });
+  }
+
+  delete<T>(endpoint: string, config?: RequestConfig): Promise<T> {
+    return this.request<T>(endpoint, { ...config, method: 'DELETE' });
+  }
+}
+
+export const apiService = new ApiService();
+```
+
+### 8. **src/services/auth.service.ts** (Create)
+```typescript
+import { authConfig } from '../config/auth.config';
+import { apiService } from './api.service';
+import { storageService } from './storage.service';
+import type {
+  LoginResponse,
+  User,
+  GoogleAuthResponse,
+  AuthError,
+  AuthErrorCode,
+} from '../types/auth.types';
+
+class AuthService {
+  private googleScriptLoaded = false;
+  private googleScriptPromise: Promise<void> | null = null;
+
+  /**
+   * Load Google Identity Services script
+   */
+  async loadGoogleScript(): Promise<void> {
+    if (this.googleScriptLoaded) return;
+    if (this.googleScriptPromise) return this.googleScriptPromise;
+
+    this.googleScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      
+      script.onload = () => {
+        this.googleScriptLoaded = true;
+        resolve();
+      };
+      
+      script.onerror = () => {
+        reject(new Error('Failed to load Google Identity Services'));
+      };
+      
+      document.head.appendChild(script);
+    });
+
+    return this.googleScriptPromise;
+  }
+
+  /**
+   * Initialize Google One Tap
+   */
+  async initializeGoogleOneTap(
+    onSuccess: (response: GoogleAuthResponse) => void,
+    onError?: (error: AuthError) => void
+  ): Promise<void> {
+    await this.loadGoogleScript();
+
+    if (!window.google?.accounts?.id) {
+      throw new Error('Google Identity Services not loaded');
+    }
+
+    window.google.accounts.id.initialize({
+      client_id: authConfig.google.clientId,
+      callback: onSuccess,
+      auto_select: false,
+      cancel_on_tap_outside: true,
+    });
+
+    window.google.accounts.id.prompt((notification) => {
+      if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+        onError?.({
+          code: 'GOOGLE_ONE_TAP_FAILED' as AuthErrorCode,
+          message: 'Google One Tap was not displayed',
+        });
+      }
+    });
+  }
+
+  /**
+   * Render Google Sign-In button
+   */
+  async renderGoogleButton(
+    element: HTMLElement,
+    onSuccess: (response: GoogleAuthResponse) => void
+  ): Promise<void> {
+    await this.loadGoogleScript();
+
+    if (!window.google?.accounts?.id) {
+      throw new Error('Google Identity Services not loaded');
+    }
+
+    window.google.accounts.id.initialize({
+      client_id: authConfig.google.clientId,
+      callback: onSuccess,
+    });
+
+    window.google.accounts.id.renderButton(element, {
+      theme: 'outline',
+      size: 'large',
+      width: element.offsetWidth,
+      text: 'signin_with',
+      shape: 'rectangular',
+      logo_alignment: 'left',
+    });
+  }
+
+  /**
+   * Authenticate with Google credential
+   */
+  async loginWithGoogle(credential: string): Promise<LoginResponse> {
+    try {
+      const response = await apiService.post<LoginResponse>(
+        authConfig.api.endpoints.googleAuth,
+        { credential }
+      );
+
+      // Store tokens and user
+      storageService.setTokens(response.tokens);
+      storageService.setUser(response.user);
+
+      return response;
+    } catch (error) {
+      throw this.handleAuthError(error);
+    }
+  }
+
+  /**
+   * Get current user from API
+   */
+  async getCurrentUser(): Promise<User> {
+    try {
+      const user = await apiService.get<User>(
+        authConfig.api.endpoints.me,
+        { requiresAuth: true }
+      );
+      
+      storageService.setUser(user);
+      return user;
+    } catch (error) {
+      throw this.handleAuthError(error);
+    }
+  }
+
+  /**
+   * Logout user
+   */
+  async logout(): Promise<void> {
+    try {
+      // Call logout endpoint if available
+      await apiService.post(
+        authConfig.api.endpoints.logout,
+        {},
+        { requiresAuth: true }
+      ).catch(() => {
+        // Ignore errors on logout endpoint
+      });
+    } finally {
+      // Always clear local storage
+      storageService.clearAll();
+      
+      // Revoke Google session if available
+      if (window.google?.accounts?.id) {
+        window.google.accounts.id.disableAutoSelect();
+      }
+    }
+  }
+
+  /**
+   * Check if user is authenticated
+   */
+  isAuthenticated(): boolean {
+    return storageService.hasTokens();
+  }
+
+  /**
+   * Get stored user
+   */
+  getStoredUser(): User | null {
+    return storageService.getUser();
+  }
+
+  /**
+   * Handle authentication errors
+   */
+  private handleAuthError(error: unknown): AuthError {
+    if (error && typeof error === 'object' && 'code' in error) {
+      return error as AuthError;
+    }
+
+    return {
+      code: 'UNKNOWN_ERROR' as AuthErrorCode,
+      message: 'An unexpected error occurred',
+    };
+  }
+}
+
+export const authService = new AuthService();
+
+// Extend Window interface for Google Identity Services
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (config: {
+            client_id: string;
+            callback: (response: GoogleAuthResponse) => void;
+            auto_select?: boolean;
+            cancel_on_tap_outside?: boolean;
+          }) => void;
+          prompt: (callback?: (notification: {
+            isDisplayed: () => boolean;
+            isNotDisplayed: () => boolean;
+            isSkippedMoment: () => boolean;
+            isDismissedMoment: () => boolean;
+            getMomentType: () => string;
+          }) => void) => void;
+          renderButton: (
+            element: HTMLElement,
+            config: {
+              theme?: 'outline' | 'filled_blue' | 'filled_black';
+              size?: 'large' | 'medium' | 'small';
+              width?: number;
+              text?: 'signin_with' | 'signup_with' | 'continue_with' | 'signin';
+              shape?: 'rectangular' | 'pill' | 'circle' | 'square';
+              logo_alignment?: 'left' | 'center';
+            }
+          ) => void;
+          disableAutoSelect: () => void;
+          revoke: (email: string, callback: () => void) => void;
+        };
+      };
+    };
+  }
+}
+```
+
+### 9. **src/store/auth.store.ts** (Create)
+```typescript
+import { create } from 'zustand';
+import { devtools } from 'zustand/middleware';
+import type { AuthState, User, AuthError, GoogleAuthResponse } from '../types/auth.types';
+import { authService } from '../services/auth.service';
+
+interface AuthStore extends AuthState {
+  // Actions
+  initialize: () => Promise<void>;
+  loginWithGoogle: (response: GoogleAuthResponse) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  clearError: () => void;
+  setLoading: (isLoading: boolean) => void;
+}
+
+export const useAuthStore = create<AuthStore>()(
+  devtools(
+    (set, get) => ({
+      // Initial state
+      user: null,
+      tokens: null,
+      isAuthenticated: false,
+      isLoading: true,
+      error: null,
+
+      // Initialize auth state from storage
+      initialize: async () => {
+        set({ isLoading: true, error: null });
+
+        try {
+          if (authService.isAuthenticated()) {
+            const user = authService.getStoredUser();
+            
+            if (user) {
+              set({
+                user,
+                isAuthenticated: true,
+                isLoading: false,
+              });
+
+              // Verify token validity by fetching current user
+              try {
+                const freshUser = await authService.getCurrentUser();
+                set({ user: freshUser });
+              } catch (error) {
+                // Token invalid, clear state
+                await get().logout();
+              }
+            } else {
+              // Has tokens but no user, fetch user
+              try {
+                const user = await authService.getCurrentUser();
+                set({
+                  user,
+                  isAuthenticated: true,
+                  isLoading: false,
+                });
+              } catch (error) {
+                await get().logout();
+              }
+            }
+          } else {
+            set({ isLoading: false });
+          }
+        } catch (error) {
+          set({
+            error: error as AuthError,
+            isLoading: false,
+            isAuthenticated: false,
+            user: null,
+          });
+        }
+      },
+
+      // Login with Google
+      loginWithGoogle: async (response: GoogleAuthResponse) => {
+        set({ isLoading: true, error: null });
+
+        try {
+          const loginResponse = await authService.loginWithGoogle(response.credential);
+          
+          set({
+            user: loginResponse.user,
+            tokens: loginResponse.tokens,
+            isAuthenticated: true,
+            isLoading: false,
+            error: null,
+          });
+        } catch (error) {
+          set({
+            error: error as AuthError,
+            isLoading: false,
+            isAuthenticated: false,
+            user: null,
+            tokens: null,
+          });
+          throw error;
+        }
+      },
+
+      // Logout
+      logout: async () => {
+        set({ isLoading: true });
+
+        try {
+          await authService.logout();
+        } finally {
+          set({
+            user: null,
+            tokens: null,
+            isAuthenticated: false,
+            isLoading: false,
+            error: null,
+          });
+        }
+      },
+
+      // Refresh user data
+      refreshUser: async () => {
+        if (!get().isAuthenticated) return;
+
+        try {
+          const user = await authService.getCurrentUser();
+          set({ user, error: null });
+        } catch (error) {
+          set({ error: error as AuthError });
+          // If refresh fails, logout
+          await get().logout();
+        }
+      },
+
+      // Clear error
+      clearError: () => {
+        set({ error: null });
+      },
+
+      // Set loading state
+      setLoading: (isLoading: boolean) => {
+        set({ isLoading });
+      },
+    }),
+    { name: 'AuthStore' }
+  )
+);
+
+// Selectors for optimized re-renders
+export const selectUser = (state: AuthStore) => state.user;
+export const selectIsAuthenticated = (state: AuthStore) => state.isAuthenticated;
+export const selectIsLoading = (state: AuthStore) => state.isLoading;
+export const selectError = (state: AuthStore) => state.error;
+```
+
+### 10. **src/hooks/useAuth.ts** (Create)
+```typescript
+import { useAuthStore, selectUser, selectIsAuthenticated, selectIsLoading, selectError } from '../store/auth.store';
+
+/**
+ * Custom hook for accessing auth state and actions
+ * Provides optimized selectors to prevent unnecessary re-renders
+ */
+export const useAuth = () => {
+  const user = useAuthStore(selectUser);
+  const isAuthenticated = useAuthStore(selectIsAuthenticated);
+  const isLoading = useAuthStore(selectIsLoading);
+  const error = useAuthStore(selectError);
+  
+  const initialize = useAuthStore((state) => state.initialize);
+  const loginWithGoogle = useAuthStore((state) => state.loginWithGoogle);
+  const logout = useAuthStore((state) => state.logout);
+  const refreshUser = useAuthStore((state) => state.refreshUser);
+  const clearError = useAuthStore((state) => state.clearError);
+
+  return {
+    // State
+    user,
+    isAuthenticated,
+    isLoading,
+    error,
+    
+    // Actions
+    initialize,
+    loginWithGoogle,
+    logout,
+    refreshUser,
+    clearError,
+  };
+};
+
+/**
+ * Hook to require authentication
+ * Throws error if user is not authenticated
+ */
+export const useRequireAuth = () => {
+  const auth = useAuth();
+  
+  if (!auth.isAuthenticated) {
+    throw new Error('Authentication required');
+  }
+  
+  return auth;
+};
+```
+
+### 11. **src/components/auth/GoogleLoginButton.tsx** (Create)
+```typescript
+import { useEffect, useRef, useState } from 'react';
+import { authService } from '../../services/auth.service';
+import { useAuth } from '../../hooks/useAuth';
+import type { GoogleAuthResponse } from '../../types/auth.types';
+import './GoogleLoginButton.css';
+
+interface GoogleLoginButtonProps {
+  onSuccess?: () => void;
+  onError?: (error: Error) => void;
+}
+
+export const GoogleLoginButton: React.FC<GoogleLoginButtonProps> = ({
+  onSuccess,
+  onError,
+}) => {
+  const buttonRef = useRef<HTMLDivElement>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const { loginWithGoogle } = useAuth();
+
+  useEffect(() => {
+    const initializeButton = async () => {
+      try {
+        setIsLoading(true);
+        setError(null);
+
+        if (!buttonRef.current) return;
+
+        const handleGoogleResponse = async (response: GoogleAuthResponse) => {
+          try {
+            await loginWithGoogle(response);
+            onSuccess?.();
+          } catch (err) {
+            const error = err instanceof Error ? err : new Error('Login failed');
+            setError(error.message);
+            onError?.(error);
+          }
+        };
+
+        await authService.renderGoogleButton(buttonRef.current, handleGoogleResponse);
+        setIsLoading(false);
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error('Failed to initialize Google Sign-In');
+        setError(error.message);
+        setIsLoading(false);
+        onError?.(error);
+      }
+    };
+
+    initializeButton();
+  }, [loginWithGoogle, onSuccess, onError]);
+
+  return (
+    <div className="google-login-button-container">
+      {isLoading && (
+        <div className="google-login-loading">
+          <div className="spinner" />
+          <span>Loading Google Sign-In...</span>
+        </div>
+      )}
+      
+      {error && (
+        <div className="google-login-error">
+          <span className="error-icon">⚠️</span>
+          <span>{error}</span>
+        </div>
+      )}
+      
+      <div
+        ref={buttonRef}
+        className="google-login-button"
+        style={{ display: isLoading ? 'none' : 'block' }}
+      />
+    </div>
+  );
+};
+```
+
+### 12. **src/components/auth/GoogleLoginButton.css** (Create)
+```css
+.google-login-button-container {
+  width: 100%;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.google-login-button {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.google-login-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 20px;
+  color: #666;
+  font-size: 14px;
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #4285f4;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.google-login-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background-color: #fee;
+  border: 1px solid #fcc;
+  border-radius: 8px;
+  color: #c33;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.error-icon {
+  font-size: 18px;
+}
+```
+
+### 13. **src/components/auth/ProtectedRoute.tsx** (Create)
+```typescript
+import { useEffect } from 'react';
+import { useNavigate } from '@tanstack/react-router';
+import { useAuth } from '../../hooks/useAuth';
+
+interface ProtectedRouteProps {
+  children: React.ReactNode;
+  fallback?: React.ReactNode;
+  redirectTo?: string;
+}
+
+export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
+  children,
+  fallback,
+  redirectTo = '/login',
+}) => {
+  const { isAuthenticated, isLoading } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated) {
+      navigate({ to: redirectTo });
+    }
+  }, [isAuthenticated, isLoading, navigate, redirectTo]);
+
+  if (isLoading) {
+    return (
+      <div className="protected-route-loading">
+        <div className="spinner" />
+        <p>Loading...</p>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return fallback ? <>{fallback}</> : null;
+  }
+
+  return <>{children}</>;
+};
+```
+
+### 14. **src/components/auth/UserProfile.tsx** (Create)
+```typescript
+import { useAuth } from '../../hooks/useAuth';
+import './UserProfile.css';
+
+export const UserProfile: React.FC = () => {
+  const { user, logout, isLoading } = useAuth();
+
+  if (!user) return null;
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch (error) {
+      console.error('Logout failed:', error);
+    }
+  };
+
+  return (
+    <div className="user-profile">
+      <div className="user-profile-info">
+        {user.picture && (
+          <img
+            src={user.picture}
+            alt={user.name}
+            className="user-profile-avatar"
+          />
+        )}
+        <div className="user-profile-details">
+          <h3 className="user-profile-name">{user.name}</h3>
+          <p className="user-profile-email">{user.email}</p>
+        </div>
+      </div>
+      
+      <button
+        onClick={handleLogout}
+        disabled={isLoading}
+        className="user-profile-logout-btn"
+      >
+        {isLoading ? 'Logging out...' : 'Logout'}
+      </button>
+    </div>
+  );
+};
+```
+
+### 15. **src/components/auth/UserProfile.css** (Create)
+```css
+.user-profile {
+  display: flex;
+  align
