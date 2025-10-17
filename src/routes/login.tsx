@@ -3,7 +3,7 @@
  * Enterprise-grade login UI with Google OAuth
  */
 
-import { createFileRoute, useNavigate, useSearch } from '@tanstack/react-router'
+import { createFileRoute, useNavigate, useSearch, redirect } from '@tanstack/react-router'
 import { GoogleLogin, type CredentialResponse } from '@react-oauth/google'
 import { useAuth } from '../hooks/useAuth'
 import { useEffect } from 'react'
@@ -11,6 +11,15 @@ import { GuestRoute } from '../components/auth/ProtectedRoute'
 
 export const Route = createFileRoute('/login')({
   component: LoginPage,
+  beforeLoad: async ({ context }) => {
+    // Redirect authenticated users to dashboard
+    const token = localStorage.getItem('auth_token')
+    if (token) {
+      throw redirect({
+        to: '/dashboard',
+      })
+    }
+  },
 })
 
 function LoginPage() {
