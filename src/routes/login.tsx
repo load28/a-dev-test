@@ -8,8 +8,10 @@ import { GoogleLogin, type CredentialResponse } from '@react-oauth/google'
 import { useAuth } from '../hooks/useAuth'
 import { useEffect } from 'react'
 import { GuestRoute } from '../components/auth/ProtectedRoute'
+import { guestOnly } from '../middleware/auth'
 
 export const Route = createFileRoute('/login')({
+  beforeLoad: guestOnly,
   component: LoginPage,
 })
 

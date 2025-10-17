@@ -6,8 +6,10 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { ProtectedRoute } from '../components/auth/ProtectedRoute'
 import { useAuth } from '../hooks/useAuth'
+import { requireAuth } from '../middleware/auth'
 
 export const Route = createFileRoute('/dashboard')({
+  beforeLoad: requireAuth,
   component: DashboardPage,
 })
 
