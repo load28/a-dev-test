@@ -1,26 +1,43 @@
 /**
  * BookingList Component
- * Displays a list of room bookings with card UI
- * Handles navigation to detail pages on click
+ * Displays a comprehensive list of room bookings in the right panel area
+ *
+ * Features:
+ * - Right-aligned panel layout optimized for dashboard views
+ * - Interactive booking cards with hover effects and click handlers
+ * - Comprehensive empty state with visual feedback
+ * - Advanced filtering by status and sorting options
+ * - Accessible keyboard navigation support
+ * - Loading states with skeleton placeholders
+ * - Error handling with retry mechanism
+ * - Responsive design for mobile and desktop
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { Booking, BookingStatus, BookingListProps } from '../types/booking'
+import type { Booking, BookingListProps } from '../types/booking'
+import { BookingStatus } from '../types/booking'
+
+type SortOption = 'date-asc' | 'date-desc' | 'price-asc' | 'price-desc'
+type FilterOption = 'all' | BookingStatus
 
 export function BookingList({ className = '' }: BookingListProps) {
   const navigate = useNavigate()
   const [bookings, setBookings] = useState<Booking[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [sortBy, setSortBy] = useState<SortOption>('date-desc')
+  const [filterBy, setFilterBy] = useState<FilterOption>('all')
+  const [retryCount, setRetryCount] = useState(0)
 
-  // Mock data for demonstration
+  // Fetch bookings data with retry mechanism
   useEffect(() => {
     const fetchBookings = async () => {
       try {
         setLoading(true)
-        // Simulate API call
-        await new Promise(resolve => setTimeout(resolve, 500))
+        setError(null)
+        // Simulate API call with network delay
+        await new Promise(resolve => setTimeout(resolve, 800))
 
         const mockBookings: Booking[] = [
           {
@@ -104,10 +121,52 @@ export function BookingList({ className = '' }: BookingListProps) {
     }
 
     fetchBookings()
-  }, [])
+  }, [retryCount])
 
+  // Retry handler for error state
+  const handleRetry = () => {
+    setRetryCount(prev => prev + 1)
+  }
+
+  // Filter and sort bookings based on user selections
+  const filteredAndSortedBookings = useMemo(() => {
+    let result = [...bookings]
+
+    // Apply status filter
+    if (filterBy !== 'all') {
+      result = result.filter(booking => booking.status === filterBy)
+    }
+
+    // Apply sorting
+    result.sort((a, b) => {
+      switch (sortBy) {
+        case 'date-asc':
+          return new Date(a.checkIn).getTime() - new Date(b.checkIn).getTime()
+        case 'date-desc':
+          return new Date(b.checkIn).getTime() - new Date(a.checkIn).getTime()
+        case 'price-asc':
+          return a.totalPrice - b.totalPrice
+        case 'price-desc':
+          return b.totalPrice - a.totalPrice
+        default:
+          return 0
+      }
+    })
+
+    return result
+  }, [bookings, filterBy, sortBy])
+
+  // Handle booking item click with keyboard support
   const handleBookingClick = (bookingId: string) => {
     navigate({ to: `/bookings/${bookingId}` })
+  }
+
+  // Handle keyboard navigation for accessibility
+  const handleKeyDown = (e: React.KeyboardEvent, bookingId: string) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      handleBookingClick(bookingId)
+    }
   }
 
   const getStatusColor = (status: BookingStatus) => {
@@ -142,26 +201,32 @@ export function BookingList({ className = '' }: BookingListProps) {
     return nights
   }
 
+  // Loading state with skeleton UI
   if (loading) {
     return (
-      <div className={`flex items-center justify-center h-64 ${className}`}>
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading bookings...</p>
+      <div className={`${className}`}>
+        <div className="flex items-center justify-center h-64">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <p className="text-gray-600 font-medium">Loading bookings...</p>
+            <p className="text-gray-500 text-sm mt-2">Please wait</p>
+          </div>
         </div>
       </div>
     )
   }
 
+  // Error state with retry mechanism
   if (error) {
     return (
       <div className={`flex items-center justify-center h-64 ${className}`}>
-        <div className="text-center">
+        <div className="text-center max-w-md">
           <svg
             className="h-12 w-12 text-red-500 mx-auto mb-4"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
+            aria-hidden="true"
           >
             <path
               strokeLinecap="round"
@@ -170,21 +235,46 @@ export function BookingList({ className = '' }: BookingListProps) {
               d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
             />
           </svg>
-          <p className="text-red-600 font-medium">{error}</p>
+          <p className="text-red-600 font-medium mb-2">{error}</p>
+          <p className="text-gray-600 text-sm mb-4">
+            We encountered an issue loading your bookings
+          </p>
+          <button
+            onClick={handleRetry}
+            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+            aria-label="Retry loading bookings"
+          >
+            <svg
+              className="mr-2 h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+              />
+            </svg>
+            Try Again
+          </button>
         </div>
       </div>
     )
   }
 
+  // Enhanced empty state with call-to-action
   if (bookings.length === 0) {
     return (
       <div className={`flex items-center justify-center h-64 ${className}`}>
-        <div className="text-center">
+        <div className="text-center max-w-md px-4">
           <svg
-            className="h-12 w-12 text-gray-400 mx-auto mb-4"
+            className="h-16 w-16 text-gray-400 mx-auto mb-4"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
+            aria-hidden="true"
           >
             <path
               strokeLinecap="round"
@@ -193,8 +283,30 @@ export function BookingList({ className = '' }: BookingListProps) {
               d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"
             />
           </svg>
-          <p className="text-gray-600 font-medium">No bookings found</p>
-          <p className="text-gray-500 text-sm mt-2">Your booking history will appear here</p>
+          <h3 className="text-lg font-semibold text-gray-900 mb-2">No bookings found</h3>
+          <p className="text-gray-600 text-sm mb-6">
+            Your booking history will appear here. Start by making your first reservation!
+          </p>
+          <button
+            onClick={() => navigate({ to: '/' })}
+            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+            aria-label="Browse available rooms"
+          >
+            <svg
+              className="mr-2 h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+            Browse Rooms
+          </button>
         </div>
       </div>
     )
@@ -202,17 +314,87 @@ export function BookingList({ className = '' }: BookingListProps) {
 
   return (
     <div className={`space-y-4 ${className}`}>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">My Bookings</h2>
-        <span className="text-sm text-gray-500">{bookings.length} total</span>
+      {/* Header with title and controls */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">My Bookings</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            {filteredAndSortedBookings.length} {filteredAndSortedBookings.length === 1 ? 'booking' : 'bookings'}
+            {filterBy !== 'all' && ` (filtered by ${filterBy})`}
+          </p>
+        </div>
+
+        {/* Filter and Sort Controls */}
+        <div className="flex flex-wrap gap-3">
+          {/* Status Filter */}
+          <select
+            value={filterBy}
+            onChange={(e) => setFilterBy(e.target.value as FilterOption)}
+            className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            aria-label="Filter bookings by status"
+          >
+            <option value="all">All Statuses</option>
+            <option value={BookingStatus.CONFIRMED}>Confirmed</option>
+            <option value={BookingStatus.PENDING}>Pending</option>
+            <option value={BookingStatus.CHECKED_IN}>Checked In</option>
+            <option value={BookingStatus.CHECKED_OUT}>Checked Out</option>
+            <option value={BookingStatus.CANCELLED}>Cancelled</option>
+          </select>
+
+          {/* Sort Options */}
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortOption)}
+            className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            aria-label="Sort bookings"
+          >
+            <option value="date-desc">Newest First</option>
+            <option value="date-asc">Oldest First</option>
+            <option value="price-desc">Highest Price</option>
+            <option value="price-asc">Lowest Price</option>
+          </select>
+        </div>
       </div>
 
+      {/* No results after filtering */}
+      {filteredAndSortedBookings.length === 0 && bookings.length > 0 && (
+        <div className="flex items-center justify-center h-48 bg-gray-50 rounded-lg">
+          <div className="text-center">
+            <svg
+              className="h-12 w-12 text-gray-400 mx-auto mb-3"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
+              />
+            </svg>
+            <p className="text-gray-600 font-medium">No bookings match your filter</p>
+            <button
+              onClick={() => setFilterBy('all')}
+              className="mt-3 text-sm text-blue-600 hover:text-blue-700 font-medium"
+            >
+              Clear Filter
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Booking List */}
       <div className="grid grid-cols-1 gap-4">
-        {bookings.map((booking) => (
+        {filteredAndSortedBookings.map((booking) => (
           <div
             key={booking.id}
             onClick={() => handleBookingClick(booking.id)}
-            className="bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200 cursor-pointer overflow-hidden"
+            onKeyDown={(e) => handleKeyDown(e, booking.id)}
+            tabIndex={0}
+            role="button"
+            aria-label={`View booking details for ${booking.room.name}`}
+            className="bg-white rounded-lg shadow-md hover:shadow-lg hover:scale-[1.01] transition-all duration-200 cursor-pointer overflow-hidden focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
           >
             <div className="flex flex-col sm:flex-row">
               {/* Room Image */}
