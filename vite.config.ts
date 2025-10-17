@@ -12,6 +12,7 @@ export default defineConfig({
     viteReact(),
     tailwindcss(),
   ],
+  // @ts-expect-error - test config for vitest
   test: {
     globals: true,
     environment: 'jsdom',
