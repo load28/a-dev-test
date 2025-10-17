@@ -1,5 +1,6 @@
 # AutoDev Workflow
 # This workflow executes tasks using Claude API in Docker
+# Updated: 2025-10-17 - Force GitHub Actions to refresh workflow cache
 
 name: 'AutoDev'
 run-name: 'AutoDev: ${{ inputs.task_title }}'
