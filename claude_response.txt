@@ -1,0 +1,1160 @@
+I'll implement an enterprise-grade OAuth Google login system with a comprehensive authentication architecture. Let me analyze the codebase and create the necessary files.
+
+## Analysis
+
+Based on the repository structure, this is a React + TypeScript + Vite project using TanStack Router. I'll implement:
+
+1. **Authentication Context & Provider** - Global auth state management
+2. **Auth Service** - Centralized authentication logic
+3. **Protected Routes** - Route guards
+4. **Token Management** - Secure token storage and refresh
+5. **Google OAuth Integration** - Complete OAuth flow
+6. **Type Safety** - Full TypeScript support
+7. **Error Handling** - Comprehensive error management
+
+## Files to Create/Modify
+
+### 1. Install Dependencies First
+
+```bash
+npm install @tanstack/react-query zustand jwt-decode
+npm install -D @types/jwt-decode
+```
+
+### 2. Create Environment Configuration
+
+**File: `.env.example`**
+```env
+VITE_GOOGLE_CLIENT_ID=your_google_client_id_here
+VITE_API_BASE_URL=http://localhost:3000/api
+VITE_AUTH_STORAGE_KEY=auth_token
+VITE_REFRESH_TOKEN_KEY=refresh_token
+```
+
+**File: `.env`**
+```env
+VITE_GOOGLE_CLIENT_ID=your_google_client_id_here
+VITE_API_BASE_URL=http://localhost:3000/api
+VITE_AUTH_STORAGE_KEY=auth_token
+VITE_REFRESH_TOKEN_KEY=refresh_token
+```
+
+### 3. Create Type Definitions
+
+**File: `src/types/auth.types.ts`**
+```typescript
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  picture?: string;
+  emailVerified: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuthTokens {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: number;
+  tokenType: string;
+}
+
+export interface AuthState {
+  user: User | null;
+  tokens: AuthTokens | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  error: AuthError | null;
+}
+
+export interface AuthError {
+  code: string;
+  message: string;
+  details?: Record<string, any>;
+}
+
+export interface GoogleAuthResponse {
+  credential: string;
+  select_by?: string;
+  clientId?: string;
+}
+
+export interface LoginResponse {
+  user: User;
+  tokens: AuthTokens;
+}
+
+export interface RefreshTokenResponse {
+  accessToken: string;
+  expiresIn: number;
+}
+
+export enum AuthErrorCode {
+  INVALID_CREDENTIALS = 'INVALID_CREDENTIALS',
+  TOKEN_EXPIRED = 'TOKEN_EXPIRED',
+  REFRESH_TOKEN_EXPIRED = 'REFRESH_TOKEN_EXPIRED',
+  NETWORK_ERROR = 'NETWORK_ERROR',
+  UNAUTHORIZED = 'UNAUTHORIZED',
+  GOOGLE_AUTH_FAILED = 'GOOGLE_AUTH_FAILED',
+  UNKNOWN_ERROR = 'UNKNOWN_ERROR',
+}
+
+export interface DecodedToken {
+  sub: string;
+  email: string;
+  name: string;
+  exp: number;
+  iat: number;
+}
+```
+
+### 4. Create Configuration
+
+**File: `src/config/auth.config.ts`**
+```typescript
+export const authConfig = {
+  google: {
+    clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+    redirectUri: `${window.location.origin}/auth/callback`,
+    scope: 'openid profile email',
+  },
+  api: {
+    baseUrl: import.meta.env.VITE_API_BASE_URL,
+    endpoints: {
+      login: '/auth/google/login',
+      refresh: '/auth/refresh',
+      logout: '/auth/logout',
+      me: '/auth/me',
+    },
+  },
+  storage: {
+    tokenKey: import.meta.env.VITE_AUTH_STORAGE_KEY || 'auth_token',
+    refreshTokenKey: import.meta.env.VITE_REFRESH_TOKEN_KEY || 'refresh_token',
+  },
+  token: {
+    refreshThreshold: 5 * 60 * 1000, // 5 minutes before expiry
+    maxRetries: 3,
+  },
+} as const;
+
+export const validateAuthConfig = (): void => {
+  if (!authConfig.google.clientId) {
+    throw new Error('VITE_GOOGLE_CLIENT_ID is not configured');
+  }
+  if (!authConfig.api.baseUrl) {
+    throw new Error('VITE_API_BASE_URL is not configured');
+  }
+};
+```
+
+### 5. Create Storage Utility
+
+**File: `src/utils/storage.util.ts`**
+```typescript
+import { AuthTokens } from '../types/auth.types';
+import { authConfig } from '../config/auth.config';
+
+class StorageUtil {
+  private readonly tokenKey = authConfig.storage.tokenKey;
+  private readonly refreshTokenKey = authConfig.storage.refreshTokenKey;
+
+  /**
+   * Store authentication tokens securely
+   */
+  setTokens(tokens: AuthTokens): void {
+    try {
+      localStorage.setItem(this.tokenKey, tokens.accessToken);
+      localStorage.setItem(this.refreshTokenKey, tokens.refreshToken);
+      
+      // Store expiry time for validation
+      const expiryTime = Date.now() + tokens.expiresIn * 1000;
+      localStorage.setItem(`${this.tokenKey}_expiry`, expiryTime.toString());
+    } catch (error) {
+      console.error('Failed to store tokens:', error);
+      throw new Error('Failed to store authentication tokens');
+    }
+  }
+
+  /**
+   * Retrieve access token
+   */
+  getAccessToken(): string | null {
+    try {
+      return localStorage.getItem(this.tokenKey);
+    } catch (error) {
+      console.error('Failed to retrieve access token:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Retrieve refresh token
+   */
+  getRefreshToken(): string | null {
+    try {
+      return localStorage.getItem(this.refreshTokenKey);
+    } catch (error) {
+      console.error('Failed to retrieve refresh token:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Check if token is expired or about to expire
+   */
+  isTokenExpired(): boolean {
+    try {
+      const expiryTime = localStorage.getItem(`${this.tokenKey}_expiry`);
+      if (!expiryTime) return true;
+
+      const expiry = parseInt(expiryTime, 10);
+      const now = Date.now();
+      
+      // Consider token expired if within refresh threshold
+      return now >= expiry - authConfig.token.refreshThreshold;
+    } catch (error) {
+      console.error('Failed to check token expiry:', error);
+      return true;
+    }
+  }
+
+  /**
+   * Clear all authentication data
+   */
+  clearTokens(): void {
+    try {
+      localStorage.removeItem(this.tokenKey);
+      localStorage.removeItem(this.refreshTokenKey);
+      localStorage.removeItem(`${this.tokenKey}_expiry`);
+    } catch (error) {
+      console.error('Failed to clear tokens:', error);
+    }
+  }
+
+  /**
+   * Store user data
+   */
+  setUser(user: any): void {
+    try {
+      localStorage.setItem('auth_user', JSON.stringify(user));
+    } catch (error) {
+      console.error('Failed to store user data:', error);
+    }
+  }
+
+  /**
+   * Retrieve user data
+   */
+  getUser(): any | null {
+    try {
+      const userData = localStorage.getItem('auth_user');
+      return userData ? JSON.parse(userData) : null;
+    } catch (error) {
+      console.error('Failed to retrieve user data:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Clear user data
+   */
+  clearUser(): void {
+    try {
+      localStorage.removeItem('auth_user');
+    } catch (error) {
+      console.error('Failed to clear user data:', error);
+    }
+  }
+
+  /**
+   * Clear all authentication data
+   */
+  clearAll(): void {
+    this.clearTokens();
+    this.clearUser();
+  }
+}
+
+export const storageUtil = new StorageUtil();
+```
+
+### 6. Create HTTP Client
+
+**File: `src/services/http.client.ts`**
+```typescript
+import { authConfig } from '../config/auth.config';
+import { storageUtil } from '../utils/storage.util';
+import { AuthErrorCode } from '../types/auth.types';
+
+interface RequestConfig extends RequestInit {
+  skipAuth?: boolean;
+  retries?: number;
+}
+
+class HttpClient {
+  private baseUrl: string;
+  private refreshPromise: Promise<string> | null = null;
+
+  constructor() {
+    this.baseUrl = authConfig.api.baseUrl;
+  }
+
+  /**
+   * Make authenticated HTTP request
+   */
+  async request<T>(
+    endpoint: string,
+    config: RequestConfig = {}
+  ): Promise<T> {
+    const { skipAuth = false, retries = 0, ...fetchConfig } = config;
+
+    const url = `${this.baseUrl}${endpoint}`;
+    const headers = new Headers(fetchConfig.headers);
+
+    // Add authentication header if not skipped
+    if (!skipAuth) {
+      const token = await this.getValidToken();
+      if (token) {
+        headers.set('Authorization', `Bearer ${token}`);
+      }
+    }
+
+    // Add default headers
+    if (!headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+
+    try {
+      const response = await fetch(url, {
+        ...fetchConfig,
+        headers,
+      });
+
+      // Handle 401 Unauthorized
+      if (response.status === 401 && !skipAuth && retries < authConfig.token.maxRetries) {
+        // Try to refresh token and retry
+        await this.refreshToken();
+        return this.request<T>(endpoint, { ...config, retries: retries + 1 });
+      }
+
+      if (!response.ok) {
+        await this.handleErrorResponse(response);
+      }
+
+      // Handle empty responses
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        return response.json();
+      }
+
+      return {} as T;
+    } catch (error) {
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error('Network request failed');
+    }
+  }
+
+  /**
+   * Get valid token, refresh if needed
+   */
+  private async getValidToken(): Promise<string | null> {
+    const token = storageUtil.getAccessToken();
+    
+    if (!token) {
+      return null;
+    }
+
+    // Check if token needs refresh
+    if (storageUtil.isTokenExpired()) {
+      try {
+        return await this.refreshToken();
+      } catch (error) {
+        console.error('Token refresh failed:', error);
+        return null;
+      }
+    }
+
+    return token;
+  }
+
+  /**
+   * Refresh access token
+   */
+  private async refreshToken(): Promise<string> {
+    // Prevent multiple simultaneous refresh requests
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.refreshPromise = this.performTokenRefresh();
+
+    try {
+      const newToken = await this.refreshPromise;
+      return newToken;
+    } finally {
+      this.refreshPromise = null;
+    }
+  }
+
+  /**
+   * Perform actual token refresh
+   */
+  private async performTokenRefresh(): Promise<string> {
+    const refreshToken = storageUtil.getRefreshToken();
+
+    if (!refreshToken) {
+      throw new Error(AuthErrorCode.REFRESH_TOKEN_EXPIRED);
+    }
+
+    try {
+      const response = await fetch(
+        `${this.baseUrl}${authConfig.api.endpoints.refresh}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ refreshToken }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(AuthErrorCode.REFRESH_TOKEN_EXPIRED);
+      }
+
+      const data = await response.json();
+      
+      // Update stored token
+      storageUtil.setTokens({
+        accessToken: data.accessToken,
+        refreshToken: refreshToken,
+        expiresIn: data.expiresIn,
+        tokenType: 'Bearer',
+      });
+
+      return data.accessToken;
+    } catch (error) {
+      storageUtil.clearAll();
+      throw error;
+    }
+  }
+
+  /**
+   * Handle error responses
+   */
+  private async handleErrorResponse(response: Response): Promise<never> {
+    let errorData: any;
+
+    try {
+      errorData = await response.json();
+    } catch {
+      errorData = { message: response.statusText };
+    }
+
+    const error = new Error(errorData.message || 'Request failed');
+    (error as any).code = errorData.code || AuthErrorCode.UNKNOWN_ERROR;
+    (error as any).status = response.status;
+    (error as any).details = errorData.details;
+
+    throw error;
+  }
+
+  /**
+   * HTTP Methods
+   */
+  get<T>(endpoint: string, config?: RequestConfig): Promise<T> {
+    return this.request<T>(endpoint, { ...config, method: 'GET' });
+  }
+
+  post<T>(endpoint: string, data?: any, config?: RequestConfig): Promise<T> {
+    return this.request<T>(endpoint, {
+      ...config,
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  put<T>(endpoint: string, data?: any, config?: RequestConfig): Promise<T> {
+    return this.request<T>(endpoint, {
+      ...config,
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  delete<T>(endpoint: string, config?: RequestConfig): Promise<T> {
+    return this.request<T>(endpoint, { ...config, method: 'DELETE' });
+  }
+
+  patch<T>(endpoint: string, data?: any, config?: RequestConfig): Promise<T> {
+    return this.request<T>(endpoint, {
+      ...config,
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+  }
+}
+
+export const httpClient = new HttpClient();
+```
+
+### 7. Create Auth Service
+
+**File: `src/services/auth.service.ts`**
+```typescript
+import { authConfig } from '../config/auth.config';
+import { httpClient } from './http.client';
+import { storageUtil } from '../utils/storage.util';
+import {
+  User,
+  AuthTokens,
+  LoginResponse,
+  GoogleAuthResponse,
+  AuthErrorCode,
+} from '../types/auth.types';
+
+class AuthService {
+  /**
+   * Initialize Google OAuth
+   */
+  initializeGoogleAuth(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (typeof window === 'undefined') {
+        reject(new Error('Window is not defined'));
+        return;
+      }
+
+      // Check if already loaded
+      if ((window as any).google?.accounts) {
+        resolve();
+        return;
+      }
+
+      // Load Google Identity Services script
+      const script = document.createElement('script');
+      script.src = 'https://accounts.google.com/gsi/client';
+      script.async = true;
+      script.defer = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error('Failed to load Google Auth script'));
+      
+      document.head.appendChild(script);
+    });
+  }
+
+  /**
+   * Login with Google OAuth
+   */
+  async loginWithGoogle(credential: string): Promise<LoginResponse> {
+    try {
+      const response = await httpClient.post<LoginResponse>(
+        authConfig.api.endpoints.login,
+        { credential },
+        { skipAuth: true }
+      );
+
+      // Store tokens and user data
+      storageUtil.setTokens(response.tokens);
+      storageUtil.setUser(response.user);
+
+      return response;
+    } catch (error) {
+      console.error('Google login failed:', error);
+      throw this.handleAuthError(error);
+    }
+  }
+
+  /**
+   * Logout user
+   */
+  async logout(): Promise<void> {
+    try {
+      // Call logout endpoint to invalidate tokens on server
+      await httpClient.post(authConfig.api.endpoints.logout, {
+        refreshToken: storageUtil.getRefreshToken(),
+      });
+    } catch (error) {
+      console.error('Logout request failed:', error);
+      // Continue with local cleanup even if server request fails
+    } finally {
+      // Clear local storage
+      storageUtil.clearAll();
+    }
+  }
+
+  /**
+   * Get current user
+   */
+  async getCurrentUser(): Promise<User | null> {
+    try {
+      // First check local storage
+      const cachedUser = storageUtil.getUser();
+      if (cachedUser) {
+        return cachedUser;
+      }
+
+      // If not in cache, fetch from server
+      const user = await httpClient.get<User>(authConfig.api.endpoints.me);
+      storageUtil.setUser(user);
+      return user;
+    } catch (error) {
+      console.error('Failed to get current user:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Check if user is authenticated
+   */
+  isAuthenticated(): boolean {
+    const token = storageUtil.getAccessToken();
+    return !!token && !storageUtil.isTokenExpired();
+  }
+
+  /**
+   * Get stored tokens
+   */
+  getTokens(): AuthTokens | null {
+    const accessToken = storageUtil.getAccessToken();
+    const refreshToken = storageUtil.getRefreshToken();
+
+    if (!accessToken || !refreshToken) {
+      return null;
+    }
+
+    return {
+      accessToken,
+      refreshToken,
+      expiresIn: 3600, // Default value
+      tokenType: 'Bearer',
+    };
+  }
+
+  /**
+   * Refresh authentication state
+   */
+  async refreshAuth(): Promise<User | null> {
+    if (!this.isAuthenticated()) {
+      return null;
+    }
+
+    try {
+      return await this.getCurrentUser();
+    } catch (error) {
+      console.error('Failed to refresh auth:', error);
+      storageUtil.clearAll();
+      return null;
+    }
+  }
+
+  /**
+   * Handle authentication errors
+   */
+  private handleAuthError(error: any): Error {
+    const authError = new Error(
+      error.message || 'Authentication failed'
+    );
+    
+    (authError as any).code = 
+      error.code || AuthErrorCode.GOOGLE_AUTH_FAILED;
+    (authError as any).details = error.details;
+
+    return authError;
+  }
+
+  /**
+   * Validate Google credential
+   */
+  validateGoogleCredential(credential: string): boolean {
+    if (!credential || typeof credential !== 'string') {
+      return false;
+    }
+
+    // Basic JWT format validation
+    const parts = credential.split('.');
+    return parts.length === 3;
+  }
+}
+
+export const authService = new AuthService();
+```
+
+### 8. Create Auth Store (Zustand)
+
+**File: `src/stores/auth.store.ts`**
+```typescript
+import { create } from 'zustand';
+import { devtools, persist } from 'zustand/middleware';
+import { authService } from '../services/auth.service';
+import { storageUtil } from '../utils/storage.util';
+import {
+  User,
+  AuthTokens,
+  AuthState,
+  AuthError,
+  AuthErrorCode,
+} from '../types/auth.types';
+
+interface AuthStore extends AuthState {
+  // Actions
+  login: (credential: string) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  clearError: () => void;
+  initialize: () => Promise<void>;
+  setLoading: (isLoading: boolean) => void;
+}
+
+export const useAuthStore = create<AuthStore>()(
+  devtools(
+    persist(
+      (set, get) => ({
+        // Initial state
+        user: null,
+        tokens: null,
+        isAuthenticated: false,
+        isLoading: true,
+        error: null,
+
+        // Initialize auth state
+        initialize: async () => {
+          set({ isLoading: true, error: null });
+
+          try {
+            // Check if tokens exist
+            const tokens = authService.getTokens();
+            
+            if (!tokens) {
+              set({
+                user: null,
+                tokens: null,
+                isAuthenticated: false,
+                isLoading: false,
+              });
+              return;
+            }
+
+            // Fetch current user
+            const user = await authService.getCurrentUser();
+
+            if (user) {
+              set({
+                user,
+                tokens,
+                isAuthenticated: true,
+                isLoading: false,
+                error: null,
+              });
+            } else {
+              // Invalid session, clear everything
+              storageUtil.clearAll();
+              set({
+                user: null,
+                tokens: null,
+                isAuthenticated: false,
+                isLoading: false,
+              });
+            }
+          } catch (error) {
+            console.error('Auth initialization failed:', error);
+            storageUtil.clearAll();
+            set({
+              user: null,
+              tokens: null,
+              isAuthenticated: false,
+              isLoading: false,
+              error: {
+                code: AuthErrorCode.UNKNOWN_ERROR,
+                message: 'Failed to initialize authentication',
+              },
+            });
+          }
+        },
+
+        // Login with Google
+        login: async (credential: string) => {
+          set({ isLoading: true, error: null });
+
+          try {
+            // Validate credential
+            if (!authService.validateGoogleCredential(credential)) {
+              throw new Error('Invalid Google credential');
+            }
+
+            // Perform login
+            const response = await authService.loginWithGoogle(credential);
+
+            set({
+              user: response.user,
+              tokens: response.tokens,
+              isAuthenticated: true,
+              isLoading: false,
+              error: null,
+            });
+          } catch (error: any) {
+            const authError: AuthError = {
+              code: error.code || AuthErrorCode.GOOGLE_AUTH_FAILED,
+              message: error.message || 'Login failed',
+              details: error.details,
+            };
+
+            set({
+              user: null,
+              tokens: null,
+              isAuthenticated: false,
+              isLoading: false,
+              error: authError,
+            });
+
+            throw error;
+          }
+        },
+
+        // Logout
+        logout: async () => {
+          set({ isLoading: true, error: null });
+
+          try {
+            await authService.logout();
+          } catch (error) {
+            console.error('Logout failed:', error);
+          } finally {
+            set({
+              user: null,
+              tokens: null,
+              isAuthenticated: false,
+              isLoading: false,
+              error: null,
+            });
+          }
+        },
+
+        // Refresh user data
+        refreshUser: async () => {
+          const { isAuthenticated } = get();
+
+          if (!isAuthenticated) {
+            return;
+          }
+
+          try {
+            const user = await authService.getCurrentUser();
+
+            if (user) {
+              set({ user, error: null });
+            } else {
+              // Session expired
+              await get().logout();
+            }
+          } catch (error: any) {
+            console.error('Failed to refresh user:', error);
+            
+            const authError: AuthError = {
+              code: error.code || AuthErrorCode.UNKNOWN_ERROR,
+              message: 'Failed to refresh user data',
+            };
+
+            set({ error: authError });
+          }
+        },
+
+        // Clear error
+        clearError: () => {
+          set({ error: null });
+        },
+
+        // Set loading state
+        setLoading: (isLoading: boolean) => {
+          set({ isLoading });
+        },
+      }),
+      {
+        name: 'auth-storage',
+        partialize: (state) => ({
+          // Only persist user data, not tokens (tokens are in localStorage)
+          user: state.user,
+        }),
+      }
+    ),
+    { name: 'AuthStore' }
+  )
+);
+
+// Selectors
+export const selectUser = (state: AuthStore) => state.user;
+export const selectIsAuthenticated = (state: AuthStore) => state.isAuthenticated;
+export const selectIsLoading = (state: AuthStore) => state.isLoading;
+export const selectError = (state: AuthStore) => state.error;
+export const selectTokens = (state: AuthStore) => state.tokens;
+```
+
+### 9. Create Auth Context & Provider
+
+**File: `src/contexts/AuthContext.tsx`**
+```typescript
+import React, { createContext, useContext, useEffect, ReactNode } from 'react';
+import { useAuthStore } from '../stores/auth.store';
+import { User, AuthError, AuthTokens } from '../types/auth.types';
+
+interface AuthContextValue {
+  user: User | null;
+  tokens: AuthTokens | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  error: AuthError | null;
+  login: (credential: string) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshUser: () => Promise<void>;
+  clearError: () => void;
+}
+
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+interface AuthProviderProps {
+  children: ReactNode;
+}
+
+export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
+  const {
+    user,
+    tokens,
+    isAuthenticated,
+    isLoading,
+    error,
+    login,
+    logout,
+    refreshUser,
+    clearError,
+    initialize,
+  } = useAuthStore();
+
+  // Initialize auth on mount
+  useEffect(() => {
+    initialize();
+  }, [initialize]);
+
+  // Auto-refresh user data periodically
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const interval = setInterval(() => {
+      refreshUser();
+    }, 5 * 60 * 1000); // Every 5 minutes
+
+    return () => clearInterval(interval);
+  }, [isAuthenticated, refreshUser]);
+
+  const value: AuthContextValue = {
+    user,
+    tokens,
+    isAuthenticated,
+    isLoading,
+    error,
+    login,
+    logout,
+    refreshUser,
+    clearError,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
+
+/**
+ * Hook to access auth context
+ */
+export const useAuth = (): AuthContextValue => {
+  const context = useContext(AuthContext);
+
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+
+  return context;
+};
+
+/**
+ * Hook to get current user
+ */
+export const useUser = (): User | null => {
+  const { user } = useAuth();
+  return user;
+};
+
+/**
+ * Hook to check authentication status
+ */
+export const useIsAuthenticated = (): boolean => {
+  const { isAuthenticated } = useAuth();
+  return isAuthenticated;
+};
+
+/**
+ * Hook to get auth loading state
+ */
+export const useAuthLoading = (): boolean => {
+  const { isLoading } = useAuth();
+  return isLoading;
+};
+
+/**
+ * Hook to get auth error
+ */
+export const useAuthError = (): AuthError | null => {
+  const { error } = useAuth();
+  return error;
+};
+```
+
+### 10. Create Google Login Component
+
+**File: `src/components/auth/GoogleLoginButton.tsx`**
+```typescript
+import React, { useEffect, useRef, useState } from 'react';
+import { useAuth } from '../../contexts/AuthContext';
+import { authService } from '../../services/auth.service';
+import { authConfig } from '../../config/auth.config';
+import { GoogleAuthResponse } from '../../types/auth.types';
+
+interface GoogleLoginButtonProps {
+  onSuccess?: () => void;
+  onError?: (error: Error) => void;
+  text?: 'signin_with' | 'signup_with' | 'continue_with' | 'signin';
+  theme?: 'outline' | 'filled_blue' | 'filled_black';
+  size?: 'large' | 'medium' | 'small';
+  width?: number;
+  locale?: string;
+}
+
+export const GoogleLoginButton: React.FC<GoogleLoginButtonProps> = ({
+  onSuccess,
+  onError,
+  text = 'signin_with',
+  theme = 'outline',
+  size = 'large',
+  width = 400,
+  locale = 'en',
+}) => {
+  const { login, isLoading } = useAuth();
+  const buttonRef = useRef<HTMLDivElement>(null);
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const initializeGoogle = async () => {
+      try {
+        await authService.initializeGoogleAuth();
+        setIsInitialized(true);
+      } catch (err) {
+        console.error('Failed to initialize Google Auth:', err);
+        setError('Failed to load Google Sign-In');
+        onError?.(err as Error);
+      }
+    };
+
+    initializeGoogle();
+  }, [onError]);
+
+  useEffect(() => {
+    if (!isInitialized || !buttonRef.current) return;
+
+    const google = (window as any).google;
+    if (!google?.accounts?.id) {
+      setError('Google Sign-In not available');
+      return;
+    }
+
+    // Initialize Google Identity Services
+    google.accounts.id.initialize({
+      client_id: authConfig.google.clientId,
+      callback: handleCredentialResponse,
+      auto_select: false,
+      cancel_on_tap_outside: true,
+      context: text,
+      ux_mode: 'popup',
+      locale,
+    });
+
+    // Render the button
+    google.accounts.id.renderButton(buttonRef.current, {
+      theme,
+      size,
+      width,
+      text,
+      shape: 'rectangular',
+      logo_alignment: 'left',
+    });
+
+    // Cleanup
+    return () => {
+      google.accounts.id.cancel();
+    };
+  }, [isInitialized, text, theme, size, width, locale]);
+
+  const handleCredentialResponse = async (response: GoogleAuthResponse) => {
+    setError(null);
+
+    try {
+      await login(response.credential);
+      onSuccess?.();
+    } catch (err) {
+      const error = err as Error;
+      console.error('Login failed:', error);
+      setError(error.message || 'Login failed');
+      onError?.(error);
+    }
+  };
+
+  if (error) {
+    return (
+      <div className="google-login-error">
+        <p className="error-message">{error}</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="retry-button"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="google-login-container">
+      <div ref={buttonRef} className="google-login-button" />
+      {isLoading && (
+        <div className="loading-overlay">
+          <div className="spinner" />
+        </div>
+      )}
+    </div>
+  );
+};
+```
+
+### 11. Create Login Page
+
+**File: `src/routes/login.tsx`**
+```typescript
+import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import { useEffect } from 'react';
+import { GoogleLoginButton } from '../components/auth/GoogleLoginButton';
+import { useAuth } from '../contexts/AuthContext';
+import '../styles/login.css';
+
+export const Route = createFileRoute('/login')({
+  component: LoginPage,
+});
+
+function LoginPage() {
+  const navigate = useNavigate();
+  const { isAuthenticated, error, clearError } = useAuth();
+
+  useEffect(() => {
+    // Redirect if already authenticated
+    if (isAuthenticated) {
+      navigate({ to: '/dashboard' });
+    }
+  }, [is
