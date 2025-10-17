@@ -1,0 +1,177 @@
+# AutoDev Workflow
+# This workflow executes tasks using Claude 4.5 Sonnet API via Docker Action
+
+name: 'AutoDev'
+run-name: 'AutoDev: ${{ inputs.task_title }}'
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_id:
+        description: "Task ID"
+        type: string
+        required: true
+      composite_task_id:
+        description: "Parent composite task ID (or 'standalone')"
+        type: string
+        required: true
+      task_title:
+        description: "Task title"
+        type: string
+        required: true
+      prompt:
+        description: "Task prompt/description"
+        type: string
+        required: true
+      base_branch:
+        description: "Branch to work on"
+        type: string
+        required: true
+      target_branch:
+        description: "Target branch for PR"
+        type: string
+        required: true
+      autodev_server_url:
+        description: "AutoDev server URL for callbacks"
+        type: string
+        required: false
+        default: "http://localhost:3000"
+
+jobs:
+  execute_task:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch }}
+          fetch-depth: 0
+
+      - name: Checkout AutoDev Action
+        uses: actions/checkout@v4
+        with:
+          repository: load28/a-dev
+          path: .autodev-action
+          sparse-checkout: |
+            action
+
+      - name: Execute task with Claude 4.5 Sonnet
+        uses: ./.autodev-action/action
+        with:
+          task-prompt: ${{ inputs.prompt }}
+          task-id: ${{ inputs.task_id }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Commit changes
+        id: commit
+        run: |
+          git config user.name "AutoDev Bot"
+          git config user.email "autodev@github-actions.bot"
+
+          git add -A
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            COMMIT_MSG="AutoDev: ${{ inputs.task_title }}
+
+Task ID: ${{ inputs.task_id }}
+Composite Task: ${{ inputs.composite_task_id }}
+
+${{ inputs.prompt }}
+
+Generated with AutoDev
+Co-Authored-By: Claude <noreply@anthropic.com>"
+
+            git commit -m "$COMMIT_MSG"
+            git push origin ${{ inputs.base_branch }}
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Pull Request
+        if: steps.commit.outputs.has_changes == 'true'
+        id: create_pr
+        run: |
+          PR_BODY="## Task: ${{ inputs.task_title }}
+
+**Task ID:** \`${{ inputs.task_id }}\`
+**Composite Task:** \`${{ inputs.composite_task_id }}\`
+
+### Description
+${{ inputs.prompt }}
+
+### Changes
+This PR contains the automated changes for this task.
+
+---
+🤖 Generated with [AutoDev](https://github.com/load28/a-dev)
+Powered by Claude 4.5 Sonnet"
+
+          PR_JSON=$(gh pr create \
+            --base "${{ inputs.target_branch }}" \
+            --head "${{ inputs.base_branch }}" \
+            --title "AutoDev: ${{ inputs.task_title }}" \
+            --body "$PR_BODY" \
+            --json number,url)
+
+          echo "PR created: $PR_JSON"
+
+          PR_NUMBER=$(echo $PR_JSON | jq -r '.number')
+          PR_URL=$(echo $PR_JSON | jq -r '.url')
+
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify AutoDev Server
+        if: always()
+        run: |
+          SUCCESS="true"
+          ERROR_MSG=""
+
+          if [ "${{ job.status }}" != "success" ]; then
+            SUCCESS="false"
+            ERROR_MSG="Workflow failed with status: ${{ job.status }}"
+          fi
+
+          PR_NUMBER="${{ steps.create_pr.outputs.pr_number }}"
+          PR_URL="${{ steps.create_pr.outputs.pr_url }}"
+
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER="null"
+          fi
+
+          if [ -z "$PR_URL" ]; then
+            PR_URL="null"
+          else
+            PR_URL="\"$PR_URL\""
+          fi
+
+          PAYLOAD=$(cat <<EOF
+          {
+            "task_id": "${{ inputs.task_id }}",
+            "composite_task_id": "${{ inputs.composite_task_id }}",
+            "repository_owner": "${{ github.repository_owner }}",
+            "repository_name": "${{ github.event.repository.name }}",
+            "pr_number": $PR_NUMBER,
+            "pr_url": $PR_URL,
+            "success": $SUCCESS,
+            "error": $([ -z "$ERROR_MSG" ] && echo "null" || echo "\"$ERROR_MSG\"")
+          }
+EOF
+          )
+
+          echo "Notifying AutoDev server..."
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "${{ inputs.autodev_server_url }}/callbacks/workflow-complete" \
+            || echo "Failed to notify server (non-fatal)"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
