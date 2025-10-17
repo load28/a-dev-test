@@ -1,12 +1,23 @@
 import { StrictMode } from 'react'
 import ReactDOM from 'react-dom/client'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
+import { GoogleOAuthProvider } from '@react-oauth/google'
 
 // Import the generated route tree
 import { routeTree } from './routeTree.gen'
 
+// Import authentication provider
+import { AuthProvider } from './contexts/AuthContext'
+
 import './styles.css'
 import reportWebVitals from './reportWebVitals.ts'
+
+// Get Google Client ID from environment variables
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID
+
+if (!GOOGLE_CLIENT_ID) {
+  console.error('VITE_GOOGLE_CLIENT_ID is not set in environment variables')
+}
 
 // Create a new router instance
 const router = createRouter({
@@ -31,7 +42,11 @@ if (rootElement && !rootElement.innerHTML) {
   const root = ReactDOM.createRoot(rootElement)
   root.render(
     <StrictMode>
-      <RouterProvider router={router} />
+      <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID || ''}>
+        <AuthProvider>
+          <RouterProvider router={router} />
+        </AuthProvider>
+      </GoogleOAuthProvider>
     </StrictMode>,
   )
 }
