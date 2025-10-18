@@ -32,6 +32,12 @@ function RootComponent() {
                 >
                   Dashboard
                 </Link>
+                <Link
+                  to="/profile"
+                  className="flex items-center px-3 py-2 text-sm font-medium text-gray-900 hover:text-blue-600 transition-colors"
+                >
+                  Profile
+                </Link>
               </div>
               <div className="flex items-center space-x-4">
                 {user && (
