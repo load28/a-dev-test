@@ -1,5 +1,6 @@
-import React, { useState, useRef, ChangeEvent } from 'react'
-import { UpdatePhotoRequest, ProfileError, ProfileErrorCode } from '../types/profile'
+import React, { useState, useRef } from 'react'
+import type { ChangeEvent } from 'react'
+import { ProfileError, ProfileErrorCode } from '../types/profile'
 
 interface ProfilePhotoProps {
   currentPhotoUrl?: string
