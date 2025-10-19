@@ -1,4 +1,4 @@
-import { Outlet, createRootRoute, Link } from '@tanstack/react-router'
+import { Outlet, createRootRoute, Link, useNavigate } from '@tanstack/react-router'
 import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 import { useAuth } from '../hooks/useAuth'
@@ -8,14 +8,11 @@ export const Route = createRootRoute({
 })
 
 function RootComponent() {
-  const { isAuthenticated, user, logout } = useAuth()
+  const { isAuthenticated, user } = useAuth()
+  const navigate = useNavigate()
 
-  const handleLogout = async () => {
-    try {
-      await logout()
-    } catch (error) {
-      console.error('Logout failed:', error)
-    }
+  const handleLogoutClick = () => {
+    navigate({ to: '/logout' })
   }
 
   return (
@@ -47,7 +44,7 @@ function RootComponent() {
                   </div>
                 )}
                 <button
-                  onClick={handleLogout}
+                  onClick={handleLogoutClick}
                   className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 transition-colors"
                 >
                   Logout
