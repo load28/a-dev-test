@@ -8,6 +8,8 @@ import { routeTree } from './routeTree.gen'
 
 // Import authentication provider
 import { AuthProvider } from './contexts/AuthContext'
+// Import consent provider
+import { ConsentProvider } from './contexts/ConsentContext'
 
 import './styles.css'
 import reportWebVitals from './reportWebVitals.ts'
@@ -42,11 +44,13 @@ if (rootElement && !rootElement.innerHTML) {
   const root = ReactDOM.createRoot(rootElement)
   root.render(
     <StrictMode>
-      <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID || ''}>
-        <AuthProvider>
-          <RouterProvider router={router} />
-        </AuthProvider>
-      </GoogleOAuthProvider>
+      <ConsentProvider>
+        <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID || ''}>
+          <AuthProvider>
+            <RouterProvider router={router} />
+          </AuthProvider>
+        </GoogleOAuthProvider>
+      </ConsentProvider>
     </StrictMode>,
   )
 }

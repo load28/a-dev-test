@@ -2,6 +2,7 @@ import { Outlet, createRootRoute, Link } from '@tanstack/react-router'
 import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { TanStackDevtools } from '@tanstack/react-devtools'
 import { useAuth } from '../hooks/useAuth'
+import { CookieConsentBanner } from '../components/consent/CookieConsentBanner'
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -60,6 +61,9 @@ function RootComponent() {
 
       {/* Main Content */}
       <Outlet />
+
+      {/* Cookie Consent Banner */}
+      <CookieConsentBanner />
 
       {/* DevTools */}
       <TanStackDevtools
