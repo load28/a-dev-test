@@ -3,7 +3,7 @@
  * Protected route demonstrating authenticated user access
  */
 
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ProtectedRoute } from '../components/auth/ProtectedRoute'
 import { useAuth } from '../hooks/useAuth'
 
@@ -20,14 +20,11 @@ function DashboardPage() {
 }
 
 function DashboardContent() {
-  const { user, logout } = useAuth()
+  const { user } = useAuth()
+  const navigate = useNavigate()
 
-  const handleLogout = async () => {
-    try {
-      await logout()
-    } catch (error) {
-      console.error('Logout failed:', error)
-    }
+  const handleLogoutClick = () => {
+    navigate({ to: '/logout' })
   }
 
   return (
@@ -38,7 +35,7 @@ function DashboardContent() {
           <div className="flex justify-between items-center">
             <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
             <button
-              onClick={handleLogout}
+              onClick={handleLogoutClick}
               className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors"
             >
               <svg
